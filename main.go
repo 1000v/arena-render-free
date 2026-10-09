@@ -1,15 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,6 +22,17 @@ const previewParam = "__arena_variant"
 const variantCount = 9
 
 type app struct{}
+
+const defaultTelegramChatID = "7725563277"
+
+var telegramClient = &http.Client{Timeout: 10 * time.Second}
+
+// A public selection endpoint needs a small abuse limit. Only successful
+// notifications count, and a failed Telegram request can be retried.
+var telegramRateLimit = struct {
+	sync.Mutex
+	lastByIP map[string]time.Time
+}{lastByIP: make(map[string]time.Time)}
 
 var archivedAssetName = regexp.MustCompile(`^[a-f0-9]{20}\.[a-z0-9]{1,6}$`)
 
@@ -51,6 +67,9 @@ func (app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+		return
+	case "/api/select":
+		handleSelection(w, r)
 		return
 	case "/review":
 		n := clampVariant(r.URL.Query().Get("v"))
@@ -112,6 +131,130 @@ func (app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// All unarchived assets fail closed, instead of contacting arena.site.
 	http.NotFound(w, r)
+}
+
+// handleSelection receives a variant only after the user explicitly clicks
+// "Выбрать вариант". The bot token is never sent to the browser.
+func handleSelection(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Reject cross-site browser calls to avoid unsolicited notifications.
+	if r.Header.Get("Sec-Fetch-Site") == "cross-site" ||
+		(r.Header.Get("Origin") != "" && !sameRequestOrigin(r)) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(ct), "application/json") {
+		http.Error(w, "expected application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+	var payload struct {
+		Variant int `json:"variant"`
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1024))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&payload); err != nil || payload.Variant < 1 || payload.Variant > variantCount {
+		http.Error(w, "invalid variant", http.StatusBadRequest)
+		return
+	}
+	var extra any
+	if dec.Decode(&extra) != io.EOF {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(os.Getenv("token_bot")) == "" {
+		log.Printf("telegram notification unavailable: Render variable token_bot is not configured")
+		http.Error(w, "Telegram notifications are not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	ip := clientIP(r)
+	telegramRateLimit.Lock()
+	if last, ok := telegramRateLimit.lastByIP[ip]; ok && time.Since(last) < 5*time.Second {
+		telegramRateLimit.Unlock()
+		http.Error(w, "please wait before selecting again", http.StatusTooManyRequests)
+		return
+	}
+	// Keep the lock during the send so parallel clicks from one user
+	// cannot bypass the limit. Notifications take at most 10 seconds.
+	err := notifyTelegram(r, payload.Variant)
+	if err == nil {
+		telegramRateLimit.lastByIP[ip] = time.Now()
+	}
+	telegramRateLimit.Unlock()
+	if err != nil {
+		log.Printf("telegram notification failed: %v", err)
+		http.Error(w, "Telegram message could not be delivered", http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, `{"ok":true}`)
+}
+
+func sameRequestOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	// Render may be behind a reverse proxy; use the request Host, which
+	// preserves the public hostname in Go's HTTP server.
+	return origin == "https://"+r.Host || origin == "http://"+r.Host
+}
+
+func clientIP(r *http.Request) string {
+	// RemoteAddr is provided by the actual server. Do not trust arbitrary
+	// client-supplied X-Forwarded-For, which attackers could spoof.
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func notifyTelegram(r *http.Request, variant int) error {
+	token := strings.TrimSpace(os.Getenv("token_bot"))
+	chatID := strings.TrimSpace(os.Getenv("TELEGRAM_CHAT_ID"))
+	if chatID == "" {
+		chatID = defaultTelegramChatID
+	}
+	msg := fmt.Sprintf("✅ Выбран вариант сайта: %02d из %02d", variant, variantCount)
+	payload, err := json.Marshal(map[string]string{
+		"chat_id": chatID,
+		"text": msg,
+	})
+	if err != nil {
+		return errors.New("encode Telegram message failed")
+	}
+	endpoint := "https://api.telegram.org/bot"+token+"/sendMessage"
+	if override := os.Getenv("TELEGRAM_API_BASE_URL"); override != "" {
+		// A test-only override is used by regression tests, never required on Render.
+		endpoint = strings.TrimRight(override, "/") + "/bot" + token + "/sendMessage"
+	}
+	out, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return errors.New("create Telegram request failed")
+	}
+	out.Header.Set("Content-Type", "application/json")
+	response, err := telegramClient.Do(out)
+	if err != nil {
+		// Do not log errors containing the request URL: it includes the bot token.
+		return errors.New("Telegram API connection failed")
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4096))
+	if err != nil {
+		return errors.New("Telegram API response could not be read")
+	}
+	var result struct { Ok bool `json:"ok"` }
+	if response.StatusCode != http.StatusOK || json.Unmarshal(body, &result) != nil || !result.Ok {
+		return fmt.Errorf("Telegram API rejected message (HTTP %d)", response.StatusCode)
+	}
+	return nil
 }
 
 func serveArchivedVariant(w http.ResponseWriter, r *http.Request, id int) {
@@ -214,6 +357,6 @@ let n=%d;const f=document.getElementById('site'),load=document.getElementById('l
 function openV(x){n=x;load.classList.remove('hide');f.src='/?__arena_variant='+x;history.replaceState(null,'','/review?v='+x);document.querySelectorAll('.tab').forEach((e,i)=>e.classList.toggle('active',i+1===x))}
 for(let i=1;i<=9;i++){const b=document.createElement('button');b.className='tab';b.textContent=String(i).padStart(2,'0');b.onclick=()=>openV(i);tabs.appendChild(b)}
 f.onload=()=>load.classList.add('hide');openV(n);
-pick.onclick=async()=>{const text='Выбран вариант '+n;try{await navigator.clipboard.writeText(text)}catch(e){}localStorage.setItem('chosenVariant',String(n));toast.textContent='✓ '+text+' — номер скопирован';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500)};
+pick.onclick=async()=>{const selected=n;pick.disabled=true;toast.textContent='Отправка выбранного варианта…';toast.classList.add('show');try{const res=await fetch('/api/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({variant:selected})});if(!res.ok)throw Error('HTTP '+res.status);localStorage.setItem('chosenVariant',String(selected));toast.textContent='✓ Вариант '+selected+' отправлен в Telegram'}catch(e){toast.textContent='Не удалось отправить в Telegram. Попробуй ещё раз.'}finally{pick.disabled=false;setTimeout(()=>toast.classList.remove('show'),3500)}};
 </script></body></html>`, initial, initial)
 }

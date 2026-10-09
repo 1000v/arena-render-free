@@ -2,6 +2,7 @@ package main
 
 import (
  "encoding/json"
+ "io"
  "fmt"
  "net/http"
  "net/http/httptest"
@@ -9,6 +10,7 @@ import (
  "path/filepath"
  "strings"
  "testing"
+ "time"
 )
 
 func request(path string) *httptest.ResponseRecorder {
@@ -103,4 +105,99 @@ func TestSPAHistoricalNavigation(t *testing.T){
  rec:=httptest.NewRecorder()
  app{}.ServeHTTP(rec,r)
  if rec.Code!=http.StatusOK || rec.Body.Len()<20000 {t.Fatalf("history route: HTTP %d",rec.Code)}
+}
+
+func TestTelegramSelectionSendsOnlyChosenVariant(t *testing.T) {
+ var calls int
+ var gotPath string
+ var gotChat, gotText string
+ telegram := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+  calls++
+  gotPath = r.URL.Path
+  if r.Method!=http.MethodPost {t.Errorf("upstream method: %s",r.Method)}
+  if r.Header.Get("Content-Type")!="application/json" {t.Errorf("upstream Content-Type: %s",r.Header.Get("Content-Type"))}
+  var data struct { ChatID string `json:"chat_id"`; Text string `json:"text"` }
+  if err:=json.NewDecoder(r.Body).Decode(&data);err!=nil {t.Errorf("Telegram JSON: %v",err)}
+  gotChat,gotText=data.ChatID,data.Text
+  w.Header().Set("Content-Type","application/json")
+  io.WriteString(w,`{"ok":true,"result":{"message_id":10}}`)
+ }))
+ defer telegram.Close()
+ t.Setenv("token_bot","test_token_not_real")
+ t.Setenv("TELEGRAM_CHAT_ID","7725563277")
+ t.Setenv("TELEGRAM_API_BASE_URL",telegram.URL)
+ telegramRateLimit.Lock(); telegramRateLimit.lastByIP=make(map[string]time.Time);telegramRateLimit.Unlock()
+ req:=httptest.NewRequest(http.MethodPost,"https://arena-variants.onrender.com/api/select",strings.NewReader(`{"variant":7}`))
+ req.Header.Set("Content-Type","application/json")
+ req.Header.Set("Origin","https://arena-variants.onrender.com")
+ req.RemoteAddr="192.0.2.71:34567"
+ rec:=httptest.NewRecorder()
+ app{}.ServeHTTP(rec,req)
+ if rec.Code!=http.StatusOK {t.Fatalf("selection HTTP %d: %s",rec.Code,rec.Body.String())}
+ if calls!=1 {t.Fatalf("expected one Telegram call; got %d",calls)}
+ if gotPath!="/bottest_token_not_real/sendMessage" {t.Errorf("endpoint=%s",gotPath)}
+ if gotChat!="7725563277" {t.Errorf("chat=%s",gotChat)}
+ if !strings.Contains(gotText,"07") {t.Errorf("text=%s",gotText)}
+ if !strings.Contains(reviewPage(4),"fetch('/api/select'") {t.Fatal("button does not submit selection to backend")}
+ if strings.Contains(reviewPage(4),"test_token_not_real") {t.Fatal("bot token leaked to browser")}
+ // Retrying immediately from the same IP must not send a duplicate.
+ retry:=httptest.NewRequest(http.MethodPost,"https://arena-variants.onrender.com/api/select",strings.NewReader(`{"variant":7}`))
+ retry.Header.Set("Content-Type","application/json")
+ retry.Header.Set("Origin","https://arena-variants.onrender.com")
+ retry.RemoteAddr="192.0.2.71:45678"
+ rec2:=httptest.NewRecorder()
+ app{}.ServeHTTP(rec2,retry)
+ if rec2.Code!=http.StatusTooManyRequests || calls!=1 {t.Fatalf("duplicate status=%d, calls=%d",rec2.Code,calls)}
+}
+
+func TestSelectionValidationAndErrors(t *testing.T) {
+ t.Setenv("token_bot","test_token_not_real")
+ t.Setenv("TELEGRAM_API_BASE_URL","http://127.0.0.1:1")
+ cases:=[]struct{name,method,body,contentType,origin string;code int}{
+  {"method","GET","", "", "",http.StatusMethodNotAllowed},
+  {"missing-type","POST",`{"variant":2}`,"text/plain","",http.StatusUnsupportedMediaType},
+  {"invalid-zero","POST",`{"variant":0}`,"application/json","",http.StatusBadRequest},
+  {"invalid-ten","POST",`{"variant":10}`,"application/json","",http.StatusBadRequest},
+  {"unknown-fields","POST",`{"variant":2,"text":"injection"}`,"application/json","",http.StatusBadRequest},
+  {"trailing-json","POST",`{"variant":2}{"variant":3}`,"application/json","",http.StatusBadRequest},
+  {"wrong-origin","POST",`{"variant":2}`,"application/json","https://evil.example",http.StatusForbidden},
+ }
+ for _,tc:=range cases {
+  t.Run(tc.name,func(t *testing.T){
+   req:=httptest.NewRequest(tc.method,"https://arena-variants.onrender.com/api/select",strings.NewReader(tc.body))
+   if tc.contentType!="" {req.Header.Set("Content-Type",tc.contentType)}
+   if tc.origin!="" {req.Header.Set("Origin",tc.origin)}
+   rec:=httptest.NewRecorder()
+   app{}.ServeHTTP(rec,req)
+   if rec.Code!=tc.code {t.Fatalf("got HTTP %d wanted %d",rec.Code,tc.code)}
+  })
+ }
+}
+
+func TestTelegramDownstreamErrorNeverReturnsSuccess(t *testing.T) {
+ telegram:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  w.Header().Set("Content-Type","application/json")
+  w.WriteHeader(http.StatusForbidden)
+  io.WriteString(w,`{"ok":false,"description":"Forbidden"}`)
+ }))
+ defer telegram.Close()
+ t.Setenv("token_bot","dummy_secret")
+ t.Setenv("TELEGRAM_API_BASE_URL",telegram.URL)
+ telegramRateLimit.Lock();telegramRateLimit.lastByIP=make(map[string]time.Time);telegramRateLimit.Unlock()
+ req:=httptest.NewRequest(http.MethodPost,"https://arena-variants.onrender.com/api/select",strings.NewReader(`{"variant":3}`))
+ req.Header.Set("Content-Type","application/json")
+ req.RemoteAddr="192.0.2.73:23456"
+ rec:=httptest.NewRecorder()
+ app{}.ServeHTTP(rec,req)
+ if rec.Code!=http.StatusBadGateway {t.Fatalf("Telegram rejection returned HTTP %d instead of 502",rec.Code)}
+ if strings.Contains(rec.Body.String(),"dummy_secret") {t.Fatal("sensitive token leaked")}
+}
+
+func TestSelectionRequiresConfiguredBotToken(t *testing.T) {
+ t.Setenv("token_bot","")
+ req:=httptest.NewRequest(http.MethodPost,"https://arena-variants.onrender.com/api/select",strings.NewReader(`{"variant":5}`))
+ req.Header.Set("Content-Type","application/json")
+ rec:=httptest.NewRecorder()
+ app{}.ServeHTTP(rec,req)
+ if rec.Code!=http.StatusServiceUnavailable {t.Fatalf("missing token: got HTTP %d",rec.Code)}
 }
