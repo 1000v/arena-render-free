@@ -1,0 +1,60 @@
+name: Verify standalone Render deployment
+on:
+  push:
+    branches: [diag/snapshot-deploy-smoke]
+permissions:
+  contents: write
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check live Render for self-hosted pages
+        run: |
+          python3 - <<'PY'
+          from urllib.request import Request,urlopen
+          from urllib.error import HTTPError
+          import time,json
+          site='https://arena-variants.onrender.com'
+          log=[]
+          for attempt in range(8):
+              try:
+                  req=Request(site+'/?__arena_variant=1',headers={'User-Agent':'Mozilla/5.0','Accept-Encoding':'identity'})
+                  with urlopen(req,timeout=40) as resp: html=resp.read(2500000).decode('utf-8','replace')
+                  ok=('static.cloudflareinsights.com/beacon' not in html and len(html)>20000 and 'preview-iframe' not in html)
+                  log.append(f'attempt {attempt+1}: len={len(html)}, archived_without_beacon={ok}')
+                  if ok: break
+              except Exception as e: log.append(f'attempt {attempt+1}: ERROR {e}')
+              time.sleep(15)
+          else:
+              open('render_smoke_result.txt','w').write('\n'.join(log)+'\n')
+              raise RuntimeError('Render did not switch to static snapshot deployment in time')
+          for i in range(1,10):
+              try:
+                  req=Request(site+f'/?__arena_variant={i}',headers={'User-Agent':'Mozilla/5.0','Accept-Encoding':'identity'})
+                  with urlopen(req,timeout=35) as resp:
+                      body=resp.read(12000000).decode('utf-8','replace')
+                      status=resp.status
+                  valid=status==200 and len(body)>20000 and 'static.cloudflareinsights.com/beacon' not in body and 'preview-iframe' not in body
+                  log.append(f'variant {i}: HTTP {status}; chars={len(body)}; archived={valid}')
+                  if not valid: raise RuntimeError(f'invalid local HTML for variant {i}')
+              except Exception as e:
+                  log.append(f'variant {i}: ERROR {e}')
+                  raise
+          post=Request(site+'/cdn-cgi/rum',data=b'legacy',method='POST',headers={'User-Agent':'Mozilla/5.0'})
+          with urlopen(post,timeout=30) as resp: status=resp.status
+          log.append(f'RUM POST status: {status}')
+          assert status==204
+          open('render_smoke_result.txt','w').write('\n'.join(log)+'\n')
+          print('\n'.join(log))
+          PY
+      - name: Preserve smoke result
+        if: always()
+        run: |
+          if test -f render_smoke_result.txt; then
+            git config user.name github-actions
+            git config user.email github-actions@users.noreply.github.com
+            git add render_smoke_result.txt
+            git diff --cached --quiet || git commit -m "Record Render deployment smoke results"
+            git push
+          fi
