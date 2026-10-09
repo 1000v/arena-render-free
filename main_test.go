@@ -1,85 +1,106 @@
 package main
 
 import (
+ "encoding/json"
+ "fmt"
  "net/http"
- "net/http/httputil"
  "net/http/httptest"
- "net/url"
- "io"
+ "os"
+ "path/filepath"
  "strings"
  "testing"
 )
 
-func TestVariantSelection(t *testing.T) {
- for _, tc := range []struct{ raw string; want int; present bool }{
-  {"/?__arena_variant=1",1,true},
-  {"/?__arena_variant=9",9,true},
-  {"/?__arena_variant=0",0,true},
-  {"/?__arena_variant=10",0,true},
-  {"/?__arena_variant=1&__arena_variant=2",0,true},
-  {"/",0,false},
- } {
-  req:=httptest.NewRequest(http.MethodGet,tc.raw,nil)
-  got,present:=requestedVariant(req)
-  if got!=tc.want || present!=tc.present { t.Errorf("%s got (%d,%v), want (%d,%v)",tc.raw,got,present,tc.want,tc.present) }
+func request(path string) *httptest.ResponseRecorder {
+ w:=httptest.NewRecorder()
+ app{}.ServeHTTP(w,httptest.NewRequest(http.MethodGet,path,nil))
+ return w
+}
+
+func TestRootAndReview(t *testing.T) {
+ home:=request("/")
+ if home.Code!=http.StatusOK || !strings.Contains(home.Body.String(),"Выберите вариант сайта") { t.Fatalf("homepage: HTTP %d",home.Code) }
+ review:=request("/review?v=3")
+ if review.Code!=http.StatusOK || !strings.Contains(review.Body.String(),"f.src='/?__arena_variant='+x") {t.Fatalf("review: HTTP %d",review.Code)}
+}
+
+func TestAllNineVariantsAreArchivedAndIndependentlyServed(t *testing.T) {
+ for i:=1;i<=variantCount;i++ {
+  i:=i
+  t.Run(fmt.Sprint(i),func(t *testing.T){
+   rec:=request(fmt.Sprintf("/?__arena_variant=%d",i))
+   if rec.Code!=http.StatusOK { t.Fatalf("variant %d HTTP %d: %s",i,rec.Code,rec.Body.String()) }
+   html:=rec.Body.String()
+   if len(html)<20000 || !strings.Contains(strings.ToLower(html),"<html") {t.Fatalf("variant %d invalid HTML, size=%d",i,len(html))}
+   if strings.Contains(html, "id=\"preview-iframe\"") {t.Fatalf("variant %d contains Arena wrapper",i)}
+   if strings.Contains(html,"static.cloudflareinsights.com/beacon") {t.Fatalf("variant %d contains Cloudflare RUM",i)}
+   if !strings.Contains(rec.Header().Get("Content-Type"),"text/html") {t.Fatalf("variant %d response is not HTML",i)}
+   cookieFound:=false
+   for _,c:=range rec.Result().Cookies() {if c.Name=="arena_variant" && c.Value==fmt.Sprint(i) {cookieFound=true}}
+   if !cookieFound {t.Fatal("selection cookie missing")}
+  })
  }
 }
 
-func TestLegacyPreviewRedirect(t *testing.T) {
- a:=&app{proxies:map[int]*httputil.ReverseProxy{}}
- rec:=httptest.NewRecorder()
- a.ServeHTTP(rec,httptest.NewRequest(http.MethodGet,"/p/3/some/path?foo=bar",nil))
- if rec.Code!=http.StatusTemporaryRedirect { t.Fatalf("status: %d",rec.Code) }
+func TestManifestAndAssetsAreBundled(t *testing.T){
+ data,err:=os.ReadFile("snapshots/manifest.json")
+ if err!=nil {t.Fatal(err)}
+ var info struct {
+  Variants map[string]any `json:"variants"`
+  AssetCount int `json:"asset_count"`
+ }
+ if err:=json.Unmarshal(data,&info);err!=nil {t.Fatal(err)}
+ if len(info.Variants)!=variantCount {t.Fatalf("expected %d archived pages, got %d",variantCount,len(info.Variants))}
+ if info.AssetCount<1 {t.Fatal("expected local fonts/assets")}
+ entries,err:=os.ReadDir("snapshots/assets")
+ if err!=nil {t.Fatal(err)}
+ if len(entries)!=info.AssetCount {t.Fatalf("manifest asset_count=%d, actual=%d",info.AssetCount,len(entries))}
+ for _,entry:=range entries{
+  path:=filepath.Join("snapshots","assets",entry.Name())
+  if !entry.Type().IsRegular(){t.Fatalf("not a regular asset: %s",entry.Name())}
+  if _,err:=os.Stat(path);err!=nil {t.Fatal(err)}
+  rec:=request("/assets/"+entry.Name())
+  if rec.Code!=http.StatusOK {t.Fatalf("asset %s HTTP %d",entry.Name(),rec.Code)}
+ }
+}
+
+func TestNoNetworkFallback(t *testing.T){
+ for _,path:=range []string{"/not-existing.js","/assets/not-a-hash.js","/cdn-cgi/challenge-platform/random","/favicon.ico"} {
+  rec:=request(path)
+  if rec.Code!=http.StatusNotFound {t.Errorf("%s returned HTTP %d; expected local 404",path,rec.Code)}
+ }
+}
+
+func TestOldURLsRedirectToLocalSnapshots(t *testing.T) {
+ rec:=request("/p/2/some/page?foo=bar")
+ if rec.Code!=http.StatusTemporaryRedirect {t.Fatalf("got HTTP %d",rec.Code)}
  loc:=rec.Header().Get("Location")
- u,err:=url.Parse(loc)
- if err!=nil || u.Path!="/some/path" || u.Query().Get("foo")!="bar" || u.Query().Get(previewParam)!="3" { t.Errorf("location: %s",loc) }
+ if loc!="/some/page?__arena_variant=2&foo=bar" {t.Fatalf("unexpected location: %s",loc)}
 }
 
-func TestRootHTMLNavigation(t *testing.T) {
- target,_:=url.Parse("https://example.arena.site")
- input:=[]byte("<a href=\"/about\">About</a><script src=\"/assets/app.js\"></script>")
- result:=string(rewriteBody(input,target,2,"text/html"))
- if !strings.Contains(result,"/about?__arena_variant=2") { t.Errorf("navigation URL not selected: %s",result) }
- if !strings.Contains(result,"src=\"/assets/app.js\"") { t.Errorf("asset URL modified: %s",result) }
- if strings.Contains(result,"/p/2") { t.Errorf("old prefix retained: %s",result) }
-}
-
-func TestRedirect(t *testing.T) {
- target,_:=url.Parse("https://example.arena.site")
- if got:=rewriteLocation("/dashboard?x=1",target,4);got!="/dashboard?__arena_variant=4&x=1" { t.Errorf("redirect %q",got) }
- if got:=rewriteLocation("https://external.example/path",target,4);got!="https://external.example/path" { t.Errorf("external redirect %q",got) }
-}
-
-func TestEmbeddedArenaLoadsWithoutNestedWrapper(t *testing.T) {
- var upstreamPath, upstreamReferer string
- upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-  upstreamPath = r.URL.String()
-  upstreamReferer = r.Referer()
-  w.Header().Set("Set-Cookie", "__cf_bm=placeholder; Domain=arena.site; Path=/; HttpOnly")
-  w.Header().Set("Permissions-Policy", "accelerometer=()")
-  w.Header().Set("Content-Type", "text/html; charset=utf-8")
-  if r.URL.Query().Get("embed")!="true" || r.Referer()=="" {
-   http.Redirect(w,r,"/",http.StatusFound)
-   return
-  }
-  io.WriteString(w,"<html><body>Embedded app, not preview wrapper</body></html>")
- }))
- defer upstream.Close()
- proxy,err:=newProxy(variant{ID:1,URL:upstream.URL+"/"})
- if err!=nil { t.Fatal(err) }
- a:=&app{proxies:map[int]*httputil.ReverseProxy{1:proxy}}
- res:=httptest.NewRecorder()
- a.ServeHTTP(res,httptest.NewRequest(http.MethodGet,"/?__arena_variant=1",nil))
- if res.Code!=http.StatusOK { t.Fatalf("HTTP %d body=%s",res.Code,res.Body.String()) }
- if !strings.Contains(res.Body.String(),"Embedded app, not preview wrapper") { t.Fatalf("wrong HTML: %s",res.Body.String()) }
- if upstreamPath!="/?embed=true" { t.Errorf("unexpected upstream URL %q",upstreamPath) }
- if upstreamReferer!=upstream.URL+"/" { t.Errorf("upstream Referer=%q",upstreamReferer) }
- if h:=res.Header().Get("Permissions-Policy");h!="" { t.Errorf("unsupported policy leaked: %s",h) }
- for _,cookie:=range res.Header().Values("Set-Cookie") {
-  if strings.Contains(strings.ToLower(cookie),"domain=arena.site") { t.Errorf("invalid cookie domain: %q",cookie) }
+func TestInvalidVariant(t *testing.T){
+ for _,p:=range []string{"/?__arena_variant=0","/?__arena_variant=10","/?__arena_variant=1&__arena_variant=2"}{
+  if rec:=request(p);rec.Code!=http.StatusBadRequest {t.Errorf("%s status=%d",p,rec.Code)}
  }
 }
 
-func TestReviewUsesEmbedMode(t *testing.T) {
- if !strings.Contains(reviewPage(2),"f.src='/?embed=true&__arena_variant='+x") { t.Fatal("review iframe does not open embedded mode") }
+func TestDiscardLegacyRUM(t *testing.T){
+ for _,p:=range []string{"/cdn-cgi/rum","/cdn-cgi/rum?anything=1"} {
+  r:=httptest.NewRequest(http.MethodPost,p,strings.NewReader("old cloudflare payload"))
+  rec:=httptest.NewRecorder()
+  app{}.ServeHTTP(rec,r)
+  if rec.Code!=http.StatusNoContent || rec.Body.Len()!=0 {t.Fatalf("POST %s: HTTP %d (%q)",p,rec.Code,rec.Body.String())}
+ }
+ if rec:=request("/cdn-cgi/rum");rec.Code!=http.StatusMethodNotAllowed {t.Fatalf("GET RUM: HTTP %d",rec.Code)}
+}
+
+func TestSPAHistoricalNavigation(t *testing.T){
+ initial:=httptest.NewRecorder()
+ app{}.ServeHTTP(initial,httptest.NewRequest(http.MethodGet,"/?__arena_variant=4",nil))
+ r:=httptest.NewRequest(http.MethodGet,"/courses",nil)
+ for _,c:=range initial.Result().Cookies(){r.AddCookie(c)}
+ r.Header.Set("Accept","text/html,application/xhtml+xml")
+ rec:=httptest.NewRecorder()
+ app{}.ServeHTTP(rec,r)
+ if rec.Code!=http.StatusOK || rec.Body.Len()<20000 {t.Fatalf("history route: HTTP %d",rec.Code)}
 }
