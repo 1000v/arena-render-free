@@ -60,6 +60,19 @@ func main() {
 }
 
 func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Old cached Cloudflare Web Analytics code may continue POSTing RUM
+	// events for a short time. Render has no /cdn-cgi/rum endpoint.
+	// Discard this optional telemetry locally instead of proxying it.
+	if r.URL.Path == "/cdn-cgi/rum" {
+		w.Header().Set("Cache-Control", "no-store")
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.URL.Path == "/healthz" {
 		w.Header().Set("Content-Type", "text/plain")
 		io.WriteString(w, "ok")
@@ -248,6 +261,12 @@ func newProxy(v variant) (*httputil.ReverseProxy, error) {
 
 var cookieDomain = regexp.MustCompile(`(?i);\s*domain=[^;]*`)
 
+// Arena injects Cloudflare Web Analytics into otherwise self-contained
+// embedded pages. Its beacon POSTs to /cdn-cgi/rum, which only exists on
+// Cloudflare's own domain and returns 404 when mirrored through Render.
+// Remove only the optional beacon, never application scripts.
+var cloudflareBeacon = regexp.MustCompile(`(?is)<script\b[^>]*\bsrc\s*=\s*["']https?://static\.cloudflareinsights\.com/beacon(?:\.min)?\.js[^"']*["'][^>]*>\s*</script\s*>`)
+
 // Only navigation URLs need the variant parameter. Assets can stay
 // root-relative and are selected by the iframe's variant cookie.
 var navRoot = regexp.MustCompile(`(?i)\b(href|action)\s*=\s*["']/[^"']*["']`)
@@ -262,6 +281,7 @@ func rewriteBody(b []byte, target *url.URL, id int, ct string) []byte {
 	s = strings.ReplaceAll(s, strings.ReplaceAll(upstream, "/", `\/`), "")
 
 	if strings.Contains(strings.ToLower(ct), "text/html") {
+		s = cloudflareBeacon.ReplaceAllString(s, "")
 		s = navRoot.ReplaceAllStringFunc(s, func(attr string) string {
 			eq := strings.IndexByte(attr, '=')
 			if eq < 0 {
