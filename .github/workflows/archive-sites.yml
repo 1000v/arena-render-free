@@ -1,0 +1,31 @@
+name: Archive Arena variants (one-time / manual)
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/archive-arena-sites
+    paths:
+      - scripts/archive_sites.py
+      - .github/workflows/archive-sites.yml
+permissions:
+  contents: write
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Capture the nine Arena variants
+        run: python3 scripts/archive_sites.py
+      - name: Commit static snapshots
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git add snapshots/
+          git diff --cached --stat
+          git diff --cached --quiet || git commit -m "Archive nine standalone Arena variants"
+          git push
