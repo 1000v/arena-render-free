@@ -1,0 +1,37 @@
+Variant 1: chars=411918 external_hosts=[('www.w3.org', 20), ('www.stu.ru', 3), ('react.dev', 2), ('cdo.sgups.tilda.ws', 1), ('abiturient-zf.stu.ru', 1), ('vk.com', 1), ('yandex.ru', 1), ('static.cloudflareinsights.com', 1)]
+  ASSET ('script', 'src', 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920')
+  SCRIPT {'type': 'module', 'src': 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920', 'integrity': 'sha512-L0ha0OXavK/8okipN9F8BtP84dg9DUhPERbBXzwI6dgTA55d2+yweo3pn5CSFYs45/r8md2+xvUPtTdvTNRfjA==', 'data-cf-beacon': '{
+  has_cf_beacon=True; rum_mentions=0; original_arena_links=0
+Variant 2: chars=972701 external_hosts=[('www.w3.org', 19), ('react.dev', 2), ('vk.com', 1), ('cdo.sgups.tilda.ws', 1), ('www.stu.ru', 1), ('static.cloudflareinsights.com', 1)]
+  ASSET ('script', 'src', 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920')
+  SCRIPT {'type': 'module', 'src': 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920', 'integrity': 'sha512-L0ha0OXavK/8okipN9F8BtP84dg9DUhPERbBXzwI6dgTA55d2+yweo3pn5CSFYs45/r8md2+xvUPtTdvTNRfjA==', 'data-cf-beacon': '{
+  has_cf_beacon=True; rum_mentions=0; original_arena_links=0
+Variant 3: chars=310954 external_hosts=[('www.w3.org', 18), ('www.stu.ru', 8), ('cdo.sgups.tilda.ws', 4), ('static.tildacdn.com', 2), ('fonts.googleapis.com', 2), ('react.dev', 2), ('fonts.gstatic.com', 1), ('schema.org', 1), ('vk.com', 1), ('static.cloudflareinsights.com', 1)]
+  ASSET ('link', 'href', 'https://cdo.sgups.tilda.ws/')
+  ASSET ('link', 'href', 'https://fonts.googleapis.com')
+  ASSET ('link', 'href', 'https://fonts.gstatic.com')
+  ASSET ('link', 'href', 'https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap')
+  ASSET ('script', 'src', 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920')
+  SCRIPT {'type': 'module', 'src': 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920', 'integrity': 'sha512-L0ha0OXavK/8okipN9F8BtP84dg9DUhPERbBXzwI6dgTA55d2+yweo3pn5CSFYs45/r8md2+xvUPtTdvTNRfjA==', 'data-cf-beacon': '{
+  has_cf_beacon=True; rum_mentions=0; original_arena_links=0
+Variant 4: chars=1989948 external_hosts=[('www.w3.org', 19), ('www.stu.ru', 3), ('cdo.sgups.tilda.ws', 2), ('react.dev', 2), ('schema.org', 1), ('vk.com', 1)]
+  ASSET ('link', 'href', 'https://www.stu.ru/')
+  has_cf_beacon=False; rum_mentions=0; original_arena_links=0
+Variant 5: chars=398275 external_hosts=[('www.w3.org', 19), ('react.dev', 2), ('cdn.jsdelivr.net', 2), ('vk.com', 1), ('www.stu.ru', 1), ('static.cloudflareinsights.com', 1)]
+  ASSET ('script', 'src', 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920')
+  SCRIPT {'type': 'module', 'src': 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920', 'integrity': 'sha512-L0ha0OXavK/8okipN9F8BtP84dg9DUhPERbBXzwI6dgTA55d2+yweo3pn5CSFYs45/r8md2+xvUPtTdvTNRfjA==', 'data-cf-beacon': '{
+  has_cf_beacon=True; rum_mentions=0; original_arena_links=0
+Variant 6: chars=698655 external_hosts=[('www.w3.org', 19), ('react.dev', 2), ('vk.com', 1), ('cdo.sgups.tilda.ws', 1), ('www.stu.ru', 1), ('2gis.ru', 1), ('static.cloudflareinsights.com', 1)]
+  ASSET ('script', 'src', 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920')
+  SCRIPT {'type': 'module', 'src': 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920', 'integrity': 'sha512-L0ha0OXavK/8okipN9F8BtP84dg9DUhPERbBXzwI6dgTA55d2+yweo3pn5CSFYs45/r8md2+xvUPtTdvTNRfjA==', 'data-cf-beacon': '{
+  has_cf_beacon=True; rum_mentions=0; original_arena_links=0
+Variant 7: chars=773207 external_hosts=[('www.w3.org', 20), ('react.dev', 2), ('vk.com', 2), ('cdo.sgups.tilda.ws', 2), ('www.stu.ru', 2), ('static.cloudflareinsights.com', 1)]
+  ASSET ('script', 'src', 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920')
+  SCRIPT {'type': 'module', 'src': 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920', 'integrity': 'sha512-L0ha0OXavK/8okipN9F8BtP84dg9DUhPERbBXzwI6dgTA55d2+yweo3pn5CSFYs45/r8md2+xvUPtTdvTNRfjA==', 'data-cf-beacon': '{
+  has_cf_beacon=True; rum_mentions=0; original_arena_links=0
+Variant 8: chars=1995549 external_hosts=[('www.w3.org', 19), ('react.dev', 2), ('vk.com', 1), ('www.stu.ru', 1)]
+  has_cf_beacon=False; rum_mentions=0; original_arena_links=0
+Variant 9: chars=427010 external_hosts=[('www.w3.org', 19), ('www.stu.ru', 6), ('react.dev', 2), ('vk.com', 1), ('static.cloudflareinsights.com', 1)]
+  ASSET ('script', 'src', 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920')
+  SCRIPT {'type': 'module', 'src': 'https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920', 'integrity': 'sha512-L0ha0OXavK/8okipN9F8BtP84dg9DUhPERbBXzwI6dgTA55d2+yweo3pn5CSFYs45/r8md2+xvUPtTdvTNRfjA==', 'data-cf-beacon': '{
+  has_cf_beacon=True; rum_mentions=0; original_arena_links=0
