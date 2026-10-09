@@ -83,6 +83,11 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		setVariantCookie(w, id)
 		q := r.URL.Query()
 		q.Del(previewParam)
+		// Arena's public page is a preview wrapper with its own iframe.
+		// Request the embedded app directly to avoid nested preview loops.
+		if r.URL.Path == "/" {
+			q.Set("embed", "true")
+		}
 		r.URL.RawQuery = q.Encode()
 		a.proxies[id].ServeHTTP(w, r)
 		return
@@ -182,16 +187,29 @@ func newProxy(v variant) (*httputil.ReverseProxy, error) {
 		req.Host = target.Host
 		req.Header.Set("Host", target.Host)
 		req.Header.Set("Accept-Encoding", "identity")
+		// Arena redirects ?embed=true back to / unless the request looks
+		// like an iframe navigation. Its own preview iframe provides a
+		// same-origin referrer. Recreate that without leaking the visitor's.
+		req.Header.Set("Referer", target.Scheme+"://"+target.Host+"/")
 		req.Header.Del("Origin")
-		req.Header.Del("Referer")
 	}
 	p.ModifyResponse = func(resp *http.Response) error {
 		for _, h := range []string{
 			"Content-Security-Policy", "Content-Security-Policy-Report-Only",
 			"X-Frame-Options", "Cross-Origin-Opener-Policy",
 			"Cross-Origin-Embedder-Policy", "Cross-Origin-Resource-Policy",
+			"Permissions-Policy", "Feature-Policy",
 		} {
 			resp.Header.Del(h)
+		}
+
+		// arena.site cookies include Domain=arena.site, which a browser
+		// must reject when delivered by onrender.com. Scope them to the
+		// proxy host instead so embedded requests can reuse the session.
+		cookies := resp.Header.Values("Set-Cookie")
+		resp.Header.Del("Set-Cookie")
+		for _, cookie := range cookies {
+			resp.Header.Add("Set-Cookie", cookieDomain.ReplaceAllString(cookie, ""))
 		}
 
 		// Different variants can share the same asset URL. Do not let the
@@ -227,6 +245,8 @@ func newProxy(v variant) (*httputil.ReverseProxy, error) {
 	}
 	return p, nil
 }
+
+var cookieDomain = regexp.MustCompile(`(?i);\s*domain=[^;]*`)
 
 // Only navigation URLs need the variant parameter. Assets can stay
 // root-relative and are selected by the iframe's variant cookie.
@@ -316,7 +336,7 @@ func reviewPage(initial int) string {
 *{box-sizing:border-box}html,body{height:100%%;margin:0;background:#0c0d0f;font-family:Inter,system-ui,sans-serif}.app{height:100%%;display:grid;grid-template-rows:56px 1fr}.bar{display:flex;align-items:center;gap:8px;padding:8px;background:#121418;border-bottom:1px solid #2a2d32}.back,.tab,.pick{height:38px;border:0;border-radius:10px;font-weight:700}.back{width:38px;display:grid;place-items:center;background:#24272d;color:#fff;text-decoration:none}.tabs{display:flex;gap:5px;overflow:auto}.tab{min-width:38px;background:transparent;color:#838995;cursor:pointer}.tab.active{background:#f3f4f6;color:#090a0b}.space{flex:1}.pick{background:#f3f4f6;color:#090a0b;padding:0 13px;white-space:nowrap;cursor:pointer}.frame{position:relative;background:#fff}.frame iframe{width:100%%;height:100%%;border:0}.load{position:absolute;inset:0;display:grid;place-items:center;background:#101216;color:#8d929b;pointer-events:none}.load.hide{display:none}.toast{position:fixed;left:50%%;bottom:22px;transform:translateX(-50%%);background:#15181d;color:#fff;border:1px solid #373b43;padding:12px 16px;border-radius:12px;display:none;z-index:4}.toast.show{display:block}@media(max-width:650px){.pick{font-size:0}.pick:after{content:'✓';font-size:16px}.tabs{max-width:calc(100vw - 105px)}}
 </style></head><body><div class="app"><header class="bar"><a class="back" href="/">←</a><div class="tabs" id="tabs"></div><div class="space"></div><button class="pick" id="pick">Выбрать вариант</button></header><main class="frame"><div class="load" id="load">Загрузка…</div><iframe id="site" referrerpolicy="no-referrer"></iframe></main></div><div class="toast" id="toast"></div><script>
 let n=%d;const f=document.getElementById('site'),load=document.getElementById('load'),toast=document.getElementById('toast');
-function openV(x){n=x;load.classList.remove('hide');f.src='/?__arena_variant='+x;history.replaceState(null,'','/review?v='+x);document.querySelectorAll('.tab').forEach((e,i)=>e.classList.toggle('active',i+1===x))}
+function openV(x){n=x;load.classList.remove('hide');f.src='/?embed=true&__arena_variant='+x;history.replaceState(null,'','/review?v='+x);document.querySelectorAll('.tab').forEach((e,i)=>e.classList.toggle('active',i+1===x))}
 for(let i=1;i<=9;i++){const b=document.createElement('button');b.className='tab';b.textContent=String(i).padStart(2,'0');b.onclick=()=>openV(i);tabs.appendChild(b)}
 f.onload=()=>load.classList.add('hide');openV(n);
 pick.onclick=async()=>{const text='Выбран вариант '+n;try{await navigator.clipboard.writeText(text)}catch(e){}localStorage.setItem('chosenVariant',String(n));toast.textContent='✓ '+text+' — номер скопирован';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500)};
