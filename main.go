@@ -65,12 +65,6 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "ok")
 		return
 	}
-	if r.URL.Path == "/" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		io.WriteString(w, homePage())
-		return
-	}
 	if r.URL.Path == "/review" {
 		n := clampVariant(r.URL.Query().Get("v"))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -79,31 +73,73 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Main proxy path: /p/1/..., /p/2/..., etc.
-	if id, rest, ok := parseProxyPath(r.URL.Path); ok {
-		http.SetCookie(w, &http.Cookie{
-			Name: "arena_variant", Value: strconv.Itoa(id), Path: "/",
-			SameSite: http.SameSiteLaxMode,
-		})
-		r.URL.Path = rest
-		if r.URL.RawPath != "" {
-			r.URL.RawPath = ""
+	// The browser must see the upstream's real pathname. Loading /p/1/
+	// directly makes many SPA routers show "Not found: /p/1/".
+	if id, present := requestedVariant(r); present {
+		if id == 0 {
+			http.Error(w, "invalid Arena variant", http.StatusBadRequest)
+			return
 		}
+		setVariantCookie(w, id)
+		q := r.URL.Query()
+		q.Del(previewParam)
+		r.URL.RawQuery = q.Encode()
 		a.proxies[id].ServeHTTP(w, r)
 		return
 	}
 
-	// Fallback for root-relative assets such as /assets/app.js.
-	// The last opened preview sets arena_variant, so these requests still
-	// go to the correct Arena version.
+	// Keep old /p/N/... links working, but redirect to the original
+	// pathname with a variant selector in the query string.
+	if id, rest, ok := parseProxyPath(r.URL.Path); ok {
+		u := &url.URL{Path: rest, RawQuery: r.URL.RawQuery}
+		q := u.Query()
+		q.Set(previewParam, strconv.Itoa(id))
+		u.RawQuery = q.Encode()
+		http.Redirect(w, r, u.String(), http.StatusTemporaryRedirect)
+		return
+	}
+
+	if r.URL.Path == "/" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		io.WriteString(w, homePage())
+		return
+	}
+
+	// Assets and client-side routes are root-relative. A cookie keeps
+	// requests for the currently opened iframe on the right upstream.
 	if c, err := r.Cookie("arena_variant"); err == nil {
-		id := clampVariant(c.Value)
-		if _, reserved := map[string]bool{"/": true, "/review": true, "/healthz": true}[r.URL.Path]; !reserved {
+		id, err := strconv.Atoi(c.Value)
+		if err == nil && id >= 1 && id <= len(variants) {
 			a.proxies[id].ServeHTTP(w, r)
 			return
 		}
 	}
 	http.NotFound(w, r)
+}
+
+const previewParam = "__arena_variant"
+
+func requestedVariant(r *http.Request) (int, bool) {
+	values, present := r.URL.Query()[previewParam]
+	if !present {
+		return 0, false
+	}
+	if len(values) != 1 {
+		return 0, true
+	}
+	id, err := strconv.Atoi(values[0])
+	if err != nil || id < 1 || id > len(variants) {
+		return 0, true
+	}
+	return id, true
+}
+
+func setVariantCookie(w http.ResponseWriter, id int) {
+	http.SetCookie(w, &http.Cookie{
+		Name: "arena_variant", Value: strconv.Itoa(id), Path: "/",
+		HttpOnly: true, SameSite: http.SameSiteLaxMode,
+	})
 }
 
 func parseProxyPath(path string) (int, string, bool) {
@@ -158,9 +194,13 @@ func newProxy(v variant) (*httputil.ReverseProxy, error) {
 			resp.Header.Del(h)
 		}
 
-		prefix := fmt.Sprintf("/p/%d", v.ID)
+		// Different variants can share the same asset URL. Do not let the
+		// browser cache content from one variant and reuse it for another.
+		resp.Header.Set("Cache-Control", "private, no-store")
+		resp.Header.Del("ETag")
+		resp.Header.Del("Last-Modified")
 		if loc := resp.Header.Get("Location"); loc != "" {
-			resp.Header.Set("Location", rewriteLocation(loc, target, prefix))
+			resp.Header.Set("Location", rewriteLocation(loc, target, v.ID))
 		}
 		if resp.Body == nil || !rewritable(resp.Header.Get("Content-Type")) {
 			return nil
@@ -171,7 +211,7 @@ func newProxy(v variant) (*httputil.ReverseProxy, error) {
 			return err
 		}
 		resp.Body.Close()
-		b = rewriteBody(b, target, prefix, resp.Header.Get("Content-Type"))
+		b = rewriteBody(b, target, v.ID, resp.Header.Get("Content-Type"))
 		resp.Body = io.NopCloser(bytes.NewReader(b))
 		resp.ContentLength = int64(len(b))
 		resp.Header.Set("Content-Length", strconv.Itoa(len(b)))
@@ -188,59 +228,66 @@ func newProxy(v variant) (*httputil.ReverseProxy, error) {
 	return p, nil
 }
 
-var attrRoot = regexp.MustCompile(`(?i)(href|src|action|poster)=(['"])/([^/])`)
-var cssRoot = regexp.MustCompile(`(?i)url\((['"]?)/([^/])`)
+// Only navigation URLs need the variant parameter. Assets can stay
+// root-relative and are selected by the iframe's variant cookie.
+var navRoot = regexp.MustCompile(`(?i)\b(href|action)\s*=\s*["']/[^"']*["']`)
 
-func rewriteBody(b []byte, target *url.URL, prefix, ct string) []byte {
+func rewriteBody(b []byte, target *url.URL, id int, ct string) []byte {
 	s := string(b)
 	upstream := target.Scheme + "://" + target.Host
-	// Absolute links back to this exact Arena host.
-	s = strings.ReplaceAll(s, upstream, prefix)
-	s = strings.ReplaceAll(s, "//"+target.Host, prefix)
-	s = strings.ReplaceAll(s, strings.ReplaceAll(upstream, "/", `\/`), strings.ReplaceAll(prefix, "/", `\/`))
+	// Remove the upstream origin, keeping the original path visible to
+	// SPA routers. Do not rewrite the URL into /p/N/.
+	s = strings.ReplaceAll(s, upstream, "")
+	s = strings.ReplaceAll(s, "//"+target.Host, "")
+	s = strings.ReplaceAll(s, strings.ReplaceAll(upstream, "/", `\/`), "")
 
-	lower := strings.ToLower(ct)
-	if strings.Contains(lower, "text/html") {
-		// Root-relative resources.
-		s = attrRoot.ReplaceAllString(s, `${1}=${2}`+prefix+`/${3}`)
-		// Exact root links (href="/", action="/", etc.).
-		for _, a := range []string{"href", "src", "action", "poster"} {
-			for _, q := range []string{`"`, `'`} {
-				s = strings.ReplaceAll(s, a+`=`+q+`/`+q, a+`=`+q+prefix+`/`+q)
+	if strings.Contains(strings.ToLower(ct), "text/html") {
+		s = navRoot.ReplaceAllStringFunc(s, func(attr string) string {
+			eq := strings.IndexByte(attr, '=')
+			if eq < 0 {
+				return attr
 			}
-		}
-		// Relative links resolve inside the selected proxy prefix.
-		base := `<base href="` + prefix + `/">`
-		if i := strings.Index(strings.ToLower(s), "<head>"); i >= 0 {
-			i += len("<head>")
-			s = s[:i] + base + s[i:]
-		}
-	}
-	if strings.Contains(lower, "text/css") {
-		s = cssRoot.ReplaceAllString(s, `url(${1}`+prefix+`/${2}`)
+			raw := strings.TrimSpace(attr[eq+1:])
+			if len(raw) < 3 {
+				return attr
+			}
+			path := raw[1 : len(raw)-1]
+			if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+				return attr
+			}
+			u, err := url.Parse(path)
+			if err != nil {
+				return attr
+			}
+			q := u.Query()
+			q.Set(previewParam, strconv.Itoa(id))
+			u.RawQuery = q.Encode()
+			return attr[:eq+1] + raw[:1] + u.String() + raw[len(raw)-1:]
+		})
 	}
 	return []byte(s)
 }
 
-func rewriteLocation(loc string, target *url.URL, prefix string) string {
+func rewriteLocation(loc string, target *url.URL, id int) string {
 	u, err := url.Parse(loc)
 	if err != nil {
 		return loc
 	}
-	if u.IsAbs() && strings.EqualFold(u.Host, target.Host) {
-		out := prefix + u.EscapedPath()
-		if u.RawQuery != "" {
-			out += "?" + u.RawQuery
-		}
-		if u.Fragment != "" {
-			out += "#" + u.Fragment
-		}
-		return out
+	if u.Host != "" && !strings.EqualFold(u.Host, target.Host) {
+		return loc // external redirect must remain external
 	}
-	if strings.HasPrefix(loc, "/") {
-		return prefix + loc
+	if u.IsAbs() && !strings.EqualFold(u.Scheme, target.Scheme) {
+		return loc
 	}
-	return loc
+	u.Scheme = ""
+	u.Host = ""
+	if u.Path == "" {
+		u.Path = "/"
+	}
+	q := u.Query()
+	q.Set(previewParam, strconv.Itoa(id))
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func rewritable(ct string) bool {
@@ -269,7 +316,7 @@ func reviewPage(initial int) string {
 *{box-sizing:border-box}html,body{height:100%%;margin:0;background:#0c0d0f;font-family:Inter,system-ui,sans-serif}.app{height:100%%;display:grid;grid-template-rows:56px 1fr}.bar{display:flex;align-items:center;gap:8px;padding:8px;background:#121418;border-bottom:1px solid #2a2d32}.back,.tab,.pick{height:38px;border:0;border-radius:10px;font-weight:700}.back{width:38px;display:grid;place-items:center;background:#24272d;color:#fff;text-decoration:none}.tabs{display:flex;gap:5px;overflow:auto}.tab{min-width:38px;background:transparent;color:#838995;cursor:pointer}.tab.active{background:#f3f4f6;color:#090a0b}.space{flex:1}.pick{background:#f3f4f6;color:#090a0b;padding:0 13px;white-space:nowrap;cursor:pointer}.frame{position:relative;background:#fff}.frame iframe{width:100%%;height:100%%;border:0}.load{position:absolute;inset:0;display:grid;place-items:center;background:#101216;color:#8d929b;pointer-events:none}.load.hide{display:none}.toast{position:fixed;left:50%%;bottom:22px;transform:translateX(-50%%);background:#15181d;color:#fff;border:1px solid #373b43;padding:12px 16px;border-radius:12px;display:none;z-index:4}.toast.show{display:block}@media(max-width:650px){.pick{font-size:0}.pick:after{content:'✓';font-size:16px}.tabs{max-width:calc(100vw - 105px)}}
 </style></head><body><div class="app"><header class="bar"><a class="back" href="/">←</a><div class="tabs" id="tabs"></div><div class="space"></div><button class="pick" id="pick">Выбрать вариант</button></header><main class="frame"><div class="load" id="load">Загрузка…</div><iframe id="site" referrerpolicy="no-referrer"></iframe></main></div><div class="toast" id="toast"></div><script>
 let n=%d;const f=document.getElementById('site'),load=document.getElementById('load'),toast=document.getElementById('toast');
-function openV(x){n=x;load.classList.remove('hide');f.src='/p/'+x+'/';history.replaceState(null,'','/review?v='+x);document.querySelectorAll('.tab').forEach((e,i)=>e.classList.toggle('active',i+1===x))}
+function openV(x){n=x;load.classList.remove('hide');f.src='/?__arena_variant='+x;history.replaceState(null,'','/review?v='+x);document.querySelectorAll('.tab').forEach((e,i)=>e.classList.toggle('active',i+1===x))}
 for(let i=1;i<=9;i++){const b=document.createElement('button');b.className='tab';b.textContent=String(i).padStart(2,'0');b.onclick=()=>openV(i);tabs.appendChild(b)}
 f.onload=()=>load.classList.add('hide');openV(n);
 pick.onclick=async()=>{const text='Выбран вариант '+n;try{await navigator.clipboard.writeText(text)}catch(e){}localStorage.setItem('chosenVariant',String(n));toast.textContent='✓ '+text+' — номер скопирован';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2500)};
