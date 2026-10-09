@@ -1,0 +1,11 @@
+attempt 1: len=411552, archived_without_beacon=True
+variant 1: HTTP 200; chars=411552; archived=True
+variant 2: HTTP 200; chars=972335; archived=True
+variant 3: HTTP 200; chars=322814; archived=True
+variant 4: HTTP 200; chars=2297978; archived=True
+variant 5: HTTP 200; chars=397805; archived=True
+variant 6: HTTP 200; chars=698289; archived=True
+variant 7: HTTP 200; chars=772841; archived=True
+variant 8: HTTP 200; chars=3890978; archived=True
+variant 9: HTTP 200; chars=426644; archived=True
+RUM POST status: 404; no beacon present in saved pages
