@@ -141,8 +141,12 @@ func TestTelegramSelectionSendsOnlyChosenVariant(t *testing.T) {
  if !strings.Contains(reviewPage(4),"fetch('/api/select'") {t.Fatal("button does not submit selection to backend")}
  if strings.Contains(reviewPage(4),"test_token_not_real") {t.Fatal("bot token leaked to browser")}
  // Retrying immediately from the same IP must not send a duplicate.
+ retry:=httptest.NewRequest(http.MethodPost,"https://arena-variants.onrender.com/api/select",strings.NewReader(`{"variant":7}`))
+ retry.Header.Set("Content-Type","application/json")
+ retry.Header.Set("Origin","https://arena-variants.onrender.com")
+ retry.RemoteAddr="192.0.2.71:45678"
  rec2:=httptest.NewRecorder()
- app{}.ServeHTTP(rec2,req.Clone(req.Context()))
+ app{}.ServeHTTP(rec2,retry)
  if rec2.Code!=http.StatusTooManyRequests || calls!=1 {t.Fatalf("duplicate status=%d, calls=%d",rec2.Code,calls)}
 }
 
