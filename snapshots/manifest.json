@@ -1,0 +1,51 @@
+{
+  "archived_at_utc": "2026-10-09T14:26:47.284285+00:00",
+  "variants": {
+    "1": {
+      "source": "https://01a08bd3-c6b2-74bd-a109-f00dda401f46.arena.site/",
+      "sha256": "f6a5f47349cc537c3a8dd0e444de21cc2e52e00674baf79ecf4e335e2174703b",
+      "bytes": 419424
+    },
+    "2": {
+      "source": "https://01a090b2-8ca0-7927-a790-6347a0e415eb.arena.site/",
+      "sha256": "aba55868d7614c77a305cb427803ca58dc4287e65362e80012fbfbec0b8cf92e",
+      "bytes": 979107
+    },
+    "3": {
+      "source": "https://01a08fb2-cdd4-71a3-be84-2e210db2a635.arena.site/",
+      "sha256": "577c5359da27d502f0111c29d30107269a6ed0cc8760e446e61d416aea616480",
+      "bytes": 331276
+    },
+    "4": {
+      "source": "https://01a090b2-8ca0-7c8e-840e-8d5e40180743.arena.site/",
+      "sha256": "ff5465c8db90ed01f5ff7362602458c5ba22ed9bdc9a11c0e1f2856a7a712e2a",
+      "bytes": 2308030
+    },
+    "5": {
+      "source": "https://01a094c4-88a4-7b7c-9e17-e5a3ad505cf2.arena.site/",
+      "sha256": "0017eb57f34ffadee2b2f9ebab101206e4d10f6fd033456a842574aebb2313c3",
+      "bytes": 401385
+    },
+    "6": {
+      "source": "https://01a0953d-925f-7895-915d-17457ab56111.arena.site/",
+      "sha256": "3034cb8101449966a9bf6d7e83b6c859c9ae85f7bffb2cdf93abd0412871f6bd",
+      "bytes": 703741
+    },
+    "7": {
+      "source": "https://01a0953d-925f-7b92-a193-25954e884b93.arena.site/",
+      "sha256": "066129ce1374c4eea9620a26d320d1f2661bd1388cf03f369c26070d0657dddd",
+      "bytes": 781384
+    },
+    "8": {
+      "source": "https://01a09563-5529-781c-ae88-f7008d8ddb42.arena.site/",
+      "sha256": "a76f87d4adade6f0c3816abcd4e53dff34beb5bc0a4e2437fefdf0e204655d88",
+      "bytes": 3896281
+    },
+    "9": {
+      "source": "https://01a09563-5529-74c9-9b86-da9792ecd2a4.arena.site/",
+      "sha256": "04410e8ebc200e3231784f62fa4d462d2c32af37c7d93e93393b682fc72dbba9",
+      "bytes": 429324
+    }
+  },
+  "asset_count": 12
+}
