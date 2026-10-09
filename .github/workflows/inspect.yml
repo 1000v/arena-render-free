@@ -1,0 +1,49 @@
+name: Inspect preview asset origins
+on:
+  push:
+    branches: [diag/arena-external-assets-20261009]
+permissions:
+  contents: write
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect all previews without JS execution
+        run: |
+          python3 - <<'PY'
+          import re, urllib.request, urllib.parse,collections
+          from html.parser import HTMLParser
+          class Sources(HTMLParser):
+              def __init__(self):
+                  super().__init__(); self.refs=[]; self.scripts=[]
+              def handle_starttag(self,tag,attrs):
+                  a=dict(attrs)
+                  for k in ('src','href','srcset','poster'):
+                      if a.get(k): self.refs.append((tag,k,a[k]))
+                  if tag=='script': self.scripts.append(a)
+          lines=[]
+          for i in range(1,10):
+              u=f'https://arena-variants.onrender.com/?__arena_variant={i}&embed=true'
+              try:
+                  req=urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0'})
+                  with urllib.request.urlopen(req, timeout=35) as r:
+                      doc=r.read(2000000).decode('utf-8','replace')
+                  parser=Sources();parser.feed(doc)
+                  uris=re.findall(r'https?://[A-Za-z0-9._:-]+',doc)
+                  hosts=collections.Counter(urllib.parse.urlsplit(x).hostname for x in uris if urllib.parse.urlsplit(x).hostname)
+                  lines.append(f'Variant {i}: chars={len(doc)} external_hosts={hosts.most_common(20)}')
+                  lines+=['  ASSET '+repr(x)[:320] for x in parser.refs if x[2].startswith(('http:','https:','//'))][:35]
+                  lines+=['  SCRIPT '+repr(x)[:260] for x in parser.scripts if x.get('src')][:15]
+                  lines.append(f'  has_cf_beacon={"static.cloudflareinsights.com/beacon.min.js" in doc}; rum_mentions={doc.count("/cdn-cgi/rum")}; original_arena_links={len(re.findall(r"https?://[^\\\"\\\x27\\s<>]+\\.arena\\.site",doc))}')
+              except Exception as e: lines.append(f'Variant {i}: ERROR={e}')
+          open('external_assets_report.txt','w').write('\n'.join(lines)+'\n')
+          print('\n'.join(lines))
+          PY
+      - name: Save report
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git add external_assets_report.txt
+          git commit -m "Record preview external dependencies" || true
+          git push
